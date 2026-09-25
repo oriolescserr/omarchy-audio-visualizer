@@ -16,6 +16,10 @@ mkdir -p -m 700 -- "$dir" || exit 0
 max_bytes=4194304 # 4 MiB
 max_side=4096
 
+# Each widget instance (one per monitor) tags its files so it only replaces its own.
+tag=${ART_TAG:-w}
+[[ $tag =~ ^[a-z0-9]{1,16}$ ]] || exit 0
+
 url=$(head -c 6000000)
 tmp=$(mktemp -p "$dir" fetch.XXXXXXXX) || exit 0
 trap 'rm -f -- "$tmp"' EXIT
@@ -64,13 +68,15 @@ done
 ((${#w} <= 5 && ${#h} <= 5)) || exit 0
 ((10#$w > 0 && 10#$h > 0 && 10#$w <= max_side && 10#$h <= max_side)) || exit 0
 
-final="$dir/art-$(date +%s%N).$ext"
+final="$dir/art-$tag-$(date +%s%N).$ext"
 mv -f -- "$tmp" "$final" || exit 0
 trap - EXIT
 
-# Keep only the newest copy.
-for old in "$dir"/art-*; do
+# Keep only this instance's newest copy, and drop copies left behind by
+# instances that no longer exist.
+for old in "$dir"/art-"$tag"-*; do
   [[ $old == "$final" ]] || rm -f -- "$old"
 done
+find "$dir" -maxdepth 1 -type f -name 'art-*' -mmin +60 -delete 2>/dev/null
 
 printf '%s\n' "$final"

@@ -39,9 +39,14 @@ BarWidget {
     onPlayingPlayerChanged: if (playingPlayer) lastPlayer = playingPlayer
     readonly property var player: playingPlayer || (opened ? (lastPlayer || playerList[0] || null) : null)
 
-    readonly property string trackTitle: player ? (player.trackTitle || "Unknown track") : ""
-    readonly property string trackArtist: player ? (player.trackArtist || "") : ""
-    readonly property string trackAlbum: player ? (player.trackAlbum || "") : ""
+    // Player metadata is capped so an oversized title cannot stall text layout.
+    function clipText(value) {
+        var s = String(value || "")
+        return s.length > 300 ? s.slice(0, 300) + "…" : s
+    }
+    readonly property string trackTitle: player ? (clipText(player.trackTitle) || "Unknown track") : ""
+    readonly property string trackArtist: player ? clipText(player.trackArtist) : ""
+    readonly property string trackAlbum: player ? clipText(player.trackAlbum) : ""
     readonly property string trackText: trackArtist ? trackTitle + " · " + trackArtist : trackTitle
     readonly property bool hasTrack: !!(player && (player.trackTitle || player.trackArtist))
 
@@ -60,7 +65,7 @@ BarWidget {
     function previousTrack() { if (player && player.canGoPrevious) player.previous() }
 
     function seekTo(seconds) {
-        if (!canSeek) return
+        if (!canSeek || !isFinite(seconds)) return
         player.position = Math.max(0, Math.min(player.length - 1, seconds))
         player.positionChanged()
     }
@@ -118,6 +123,7 @@ BarWidget {
     // cava.conf with the validated bar count, written to the user's private
     // runtime directory before cava starts.
     property bool cavaConfigReady: false
+    property bool cavaConfigFailed: false
     FileView {
         id: cavaTemplate
         path: root.pluginFile("cava.conf")
@@ -129,15 +135,16 @@ BarWidget {
         blockWrites: true
         atomicWrites: true
         printErrors: false
-        onSaveFailed: root.cavaConfigReady = false
+        onSaveFailed: root.cavaConfigFailed = true
     }
     // Writes are synchronous (blockWrites). Marking the config ready on the next
     // tick restarts a running cava so it picks up a new bar count.
     function writeCavaConfig() {
         cavaConfigReady = false
+        cavaConfigFailed = false
         if (!cavaConfig.path) return
         cavaConfig.setText(cavaTemplate.text().replace(/^\[general\]$/m, "[general]\nbars = " + barCount))
-        Qt.callLater(function () { root.cavaConfigReady = true })
+        Qt.callLater(function () { root.cavaConfigReady = !root.cavaConfigFailed })
     }
     onBarCountChanged: writeCavaConfig()
 
@@ -293,6 +300,8 @@ BarWidget {
     // dimensions, and the card shows that copy. Only fetched while the card is open.
     readonly property string artRequest: opened && player && player.trackArtUrl ? player.trackArtUrl : ""
     property string artPath: ""
+    // Tags this instance's files; the bar creates one widget per monitor.
+    readonly property string artTag: "w" + Math.floor(Math.random() * 1e12).toString(36)
     onArtRequestChanged: {
         artPath = ""
         artDebounce.restart()
@@ -319,7 +328,7 @@ BarWidget {
         property bool pending: false
         command: ["/usr/bin/timeout", "20", "/usr/bin/bash", root.pluginFile("art-fetch.sh")]
         clearEnvironment: true
-        environment: root.helperEnvironment
+        environment: Object.assign({ ART_TAG: root.artTag }, root.helperEnvironment)
         stdinEnabled: true
         onStarted: {
             write(request)
@@ -629,7 +638,7 @@ BarWidget {
                 Text {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
-                    text: root.player && root.player.identity ? "Playing on " + root.player.identity : ""
+                    text: root.player && root.player.identity ? "Playing on " + root.clipText(root.player.identity) : ""
                     textFormat: Text.PlainText
                     visible: root.hasTrack && text !== ""
                     color: root.bar ? root.bar.foreground : root.tint
