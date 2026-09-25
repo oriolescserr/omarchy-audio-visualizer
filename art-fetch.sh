@@ -73,11 +73,12 @@ final="$dir/art-$tag-$(date +%s%N).$ext"
 mv -f -- "$tmp" "$final" || exit 0
 trap - EXIT
 
-# Keep only this instance's newest copy, and drop copies left behind by
-# instances that no longer exist.
-for old in "$dir"/art-"$tag"-*; do
-  [[ $old == "$final" ]] || rm -f -- "$old"
+# Keep this instance's 10 newest copies (the widget remembers the same 10), and
+# drop copies left behind by instances that no longer exist. Names sort by time.
+own=("$dir"/art-"$tag"-*)
+for ((i = 0; i < ${#own[@]} - 10; i++)); do
+  rm -f -- "${own[i]}"
 done
-find "$dir" -maxdepth 1 -type f -name 'art-*' -mmin +60 -delete 2>/dev/null
+find "$dir" -maxdepth 1 -type f -name 'art-*' ! -name "art-$tag-*" -mmin +60 -delete 2>/dev/null
 
 printf '%s\n' "$final"

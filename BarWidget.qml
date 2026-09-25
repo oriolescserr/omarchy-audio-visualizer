@@ -164,7 +164,11 @@ BarWidget {
             root.cavaChecked = true
         }
     }
-    onOpenedChanged: if (opened) cavaCheck.running = true
+    onOpenedChanged: {
+        if (!opened) return
+        cavaCheck.running = true
+        retryArtwork()
+    }
 
     Process {
         id: cava
@@ -316,18 +320,57 @@ BarWidget {
     // ---- Artwork ------------------------------------------------------------
     // The player's artwork URL is never loaded directly: art-fetch.sh copies it
     // to the runtime directory after checking scheme, size, type and pixel
-    // dimensions, and the card shows that copy. Only fetched while the card is open.
-    readonly property string artRequest: opened && player && player.trackArtUrl ? player.trackArtUrl : ""
+    // dimensions, and the card shows that copy. Fetched once per track in the
+    // background, so the card opens with the artwork already there.
+    readonly property string artRequest: player && player.trackArtUrl ? player.trackArtUrl : ""
     property string artPath: ""
+    property string artFetchedFor: ""
+    // Only the copy made for the current URL is shown, never a previous track's.
+    readonly property string artShown: artRequest && artRequest === artFetchedFor ? artPath : ""
     // Tags this instance's files; the bar creates one widget per monitor.
     readonly property string artTag: "w" + Math.floor(Math.random() * 1e12).toString(36)
+    // The last 10 copies are remembered (keyed by a hash, since data URLs can be
+    // megabytes), so going back to a recent track shows its artwork at once.
+    readonly property int artCacheSize: 10
+    property var artCache: ({})
+    property var artCacheOrder: []
+    function rememberArt(url, path) {
+        var key = Qt.md5(url)
+        if (!(key in artCache)) {
+            artCacheOrder.push(key)
+            if (artCacheOrder.length > artCacheSize) delete artCache[artCacheOrder.shift()]
+        }
+        artCache[key] = path
+    }
+    function forgetArt(url) {
+        var key = Qt.md5(url)
+        delete artCache[key]
+        artCacheOrder = artCacheOrder.filter(function (k) { return k !== key })
+    }
     onArtRequestChanged: {
-        artPath = ""
+        if (!artRequest || artRequest === artFetchedFor) return
+        var cached = artCache[Qt.md5(artRequest)]
+        if (cached) {
+            artPath = cached
+            artFetchedFor = artRequest
+            return
+        }
         artDebounce.restart()
+    }
+    // A cached copy that can no longer be read is fetched again.
+    function artLoadFailed() {
+        if (!artRequest) return
+        forgetArt(artRequest)
+        artFetchedFor = ""
+        artDebounce.restart()
+    }
+    // A fetch that failed (for example offline) is retried when the card opens.
+    function retryArtwork() {
+        if (artRequest && !artShown && !artFetch.running) artDebounce.restart()
     }
     Timer {
         id: artDebounce
-        interval: 150
+        interval: 80
         onTriggered: root.startArtFetch()
     }
     // A running fetch is stopped first; the new one starts once it has exited.
@@ -364,8 +407,11 @@ BarWidget {
             onStreamFinished: {
                 var path = text.trim()
                 var dir = root.runtimeDir + "/oriolus-audio-visualizer/"
-                if (artFetch.request === root.artRequest && path.indexOf(dir) === 0 && path.indexOf("\n") < 0)
-                    root.artPath = path
+                var valid = path.indexOf(dir) === 0 && path.indexOf("\n") < 0
+                if (valid) root.rememberArt(artFetch.request, path)
+                if (artFetch.request !== root.artRequest) return
+                root.artPath = valid ? path : ""
+                root.artFetchedFor = artFetch.request
             }
         }
     }
@@ -549,12 +595,13 @@ BarWidget {
                         Image {
                             id: art
                             anchors.fill: parent
-                            source: root.artPath ? "file://" + root.artPath : ""
+                            source: root.artShown ? "file://" + root.artShown : ""
                             sourceSize.width: 256
                             sourceSize.height: 256
                             fillMode: Image.PreserveAspectCrop
                             asynchronous: true
                             visible: status === Image.Ready
+                            onStatusChanged: if (status === Image.Error) root.artLoadFailed()
                         }
                         Text {
                             anchors.centerIn: parent
