@@ -357,10 +357,17 @@ BarWidget {
         }
         artDebounce.restart()
     }
-    // A cached copy that can no longer be read is fetched again.
+    // A copy that cannot be decoded is fetched again once; if the fresh copy
+    // fails too, the placeholder stays instead of refetching in a loop.
+    property string artRetriedFor: ""
     function artLoadFailed() {
         if (!artRequest) return
         forgetArt(artRequest)
+        if (artRetriedFor === artRequest) {
+            artPath = ""
+            return
+        }
+        artRetriedFor = artRequest
         artFetchedFor = ""
         artDebounce.restart()
     }
