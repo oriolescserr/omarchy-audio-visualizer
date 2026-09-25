@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "oriolescserr",
   "license": "MIT",
-  "description": "Minimal audio spectrum bars with smooth animations. Takes no space until music plays, matches the bar text colour and shows track info on hover or click. Requires cava.",
+  "description": "Minimal audio spectrum bars for your music, with smooth animations. Takes no space until something plays (Spotify, browsers, mpv), matches the bar text colour and opens a now playing card with artwork and controls. Requires cava.",
   "kinds": [
     "bar-widget"
   ],
