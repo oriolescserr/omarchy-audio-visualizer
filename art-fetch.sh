@@ -28,7 +28,8 @@ trap 'exit 1' TERM INT HUP
 case $url in
   https://*)
     # --disable must come first: it keeps ~/.curlrc from changing these limits.
-    curl --disable --silent --fail --location --max-redirs 3 \
+    # --globoff stops [] and {} in the URL from expanding into many requests.
+    curl --disable --globoff --silent --fail --location --max-redirs 3 \
       --proto '=https' --proto-redir '=https' \
       --connect-timeout 5 --max-time 10 --max-filesize "$max_bytes" \
       --output "$tmp" "$url" || exit 0

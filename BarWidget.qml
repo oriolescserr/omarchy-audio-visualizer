@@ -150,14 +150,19 @@ BarWidget {
 
     // Checked on load and whenever the card opens, so installing cava later
     // clears the notice without restarting the shell.
-    property bool cavaInstalled: true
+    // cava only starts once the check has confirmed it exists.
+    property bool cavaChecked: false
+    property bool cavaInstalled: false
     readonly property string cavaInstallCommand: "omarchy pkg add cava"
     Process {
         id: cavaCheck
         command: ["/usr/bin/test", "-x", "/usr/bin/cava"]
         clearEnvironment: true
         environment: root.helperEnvironment
-        onExited: function (exitCode) { root.cavaInstalled = exitCode === 0 }
+        onExited: function (exitCode) {
+            root.cavaInstalled = exitCode === 0
+            root.cavaChecked = true
+        }
     }
     onOpenedChanged: if (opened) cavaCheck.running = true
 
@@ -412,7 +417,7 @@ BarWidget {
                 // Shown when cava is missing: the bars cannot be drawn without it.
                 Rectangle {
                     width: parent.width
-                    visible: !root.cavaInstalled
+                    visible: root.cavaChecked && !root.cavaInstalled
                     implicitHeight: notice.implicitHeight + Style.space(20)
                     color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b, 0.06)
                     border.width: 1
