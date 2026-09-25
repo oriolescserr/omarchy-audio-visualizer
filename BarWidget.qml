@@ -47,7 +47,6 @@ BarWidget {
     readonly property string trackTitle: player ? (clipText(player.trackTitle) || "Unknown track") : ""
     readonly property string trackArtist: player ? clipText(player.trackArtist) : ""
     readonly property string trackAlbum: player ? clipText(player.trackAlbum) : ""
-    readonly property string trackText: trackArtist ? trackTitle + " · " + trackArtist : trackTitle
     readonly property bool hasTrack: !!(player && (player.trackTitle || player.trackArtist))
 
     // ---- Card open state --------------------------------------------------
@@ -57,8 +56,16 @@ BarWidget {
     onPlayerChanged: if (!player) opened = false
 
     // ---- Playback actions -------------------------------------------------
-    readonly property bool canSeek: !!(player && player.canSeek && player.positionSupported
-                                       && player.lengthSupported && player.length > 0)
+    // Live streams report an effectively infinite length (browsers send the
+    // largest 64-bit value), so anything over a week is treated as live. Players
+    // send no stream start time, and browsers report a position that restarts
+    // every few seconds, so a live stream shows no times.
+    readonly property bool isLive: !!(player && player.lengthSupported
+                                      && (!isFinite(player.length) || player.length > 7 * 24 * 3600))
+    // Absolute seeks need a real length; live streams seek relative to where
+    // they are, which works when the stream keeps a buffer behind the live edge.
+    readonly property bool canSeekRelative: !!(player && player.canSeek && player.positionSupported)
+    readonly property bool canSeek: canSeekRelative && player.lengthSupported && player.length > 0 && !isLive
 
     function playPause() { if (player && player.canTogglePlaying) player.togglePlaying() }
     function nextTrack() { if (player && player.canGoNext) player.next() }
@@ -69,7 +76,15 @@ BarWidget {
         player.position = Math.max(0, Math.min(player.length - 1, seconds))
         player.positionChanged()
     }
-    function seekBy(seconds) { if (canSeek) seekTo(player.position + seconds) }
+    function seekBy(seconds) {
+        if (!isFinite(seconds)) return
+        if (isLive) {
+            // Passed on for players that keep a buffer; browsers ignore it.
+            if (canSeekRelative) player.seek(seconds)
+            return
+        }
+        if (canSeek) seekTo(player.position + seconds)
+    }
 
     function changeVolume(delta) {
         if (!player || !player.volumeSupported || !player.canControl) return
@@ -710,13 +725,17 @@ BarWidget {
                 }
 
                 // Progress: elapsed time, seek bar and length. Click, drag or
-                // scroll to seek; the knob shows only on hover or drag.
+                // scroll to seek; the knob shows only on hover or drag. On a live
+                // stream the times are hidden, the bar stays full and a LIVE
+                // marker takes the length's place; scroll and arrows still send
+                // relative seeks.
                 RowLayout {
                     width: parent.width
                     spacing: Style.space(10)
                     visible: root.hasTrack && root.player.lengthSupported && root.player.length > 0
 
                     Text {
+                        visible: !root.isLive
                         text: root.formatTime(seek.shown)
                         textFormat: Text.PlainText
                         color: root.bar ? root.bar.foreground : root.tint
@@ -734,7 +753,7 @@ BarWidget {
                         property real dragValue: 0
                         readonly property real length: root.player ? Math.max(1, root.player.length) : 1
                         readonly property real shown: dragging ? dragValue : (root.player ? root.player.position : 0)
-                        readonly property real progress: Math.max(0, Math.min(1, shown / length))
+                        readonly property real progress: root.isLive ? 1 : Math.max(0, Math.min(1, shown / length))
                         readonly property bool hot: root.canSeek && (seekMouse.containsMouse || dragging)
                         readonly property color fg: root.bar ? root.bar.foreground : root.tint
 
@@ -771,14 +790,15 @@ BarWidget {
                         MouseArea {
                             id: seekMouse
                             anchors.fill: parent
-                            enabled: root.canSeek
+                            enabled: root.canSeek || (root.isLive && root.canSeekRelative)
                             hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
+                            cursorShape: root.canSeek ? Qt.PointingHandCursor : Qt.ArrowCursor
 
                             function valueAt(x) {
                                 return Math.max(0, Math.min(1, x / width)) * seek.length
                             }
                             onPressed: function (mouse) {
+                                if (!root.canSeek) return
                                 seek.dragValue = valueAt(mouse.x)
                                 seek.dragging = true
                             }
@@ -786,6 +806,7 @@ BarWidget {
                                 if (seek.dragging) seek.dragValue = valueAt(mouse.x)
                             }
                             onReleased: {
+                                if (!seek.dragging) return
                                 root.seekTo(seek.dragValue)
                                 seek.dragging = false
                             }
@@ -794,12 +815,33 @@ BarWidget {
                     }
 
                     Text {
+                        visible: !root.isLive
                         text: root.formatTime(root.player ? root.player.length : 0)
                         textFormat: Text.PlainText
                         color: root.bar ? root.bar.foreground : root.tint
                         opacity: 0.6
                         font.family: Style.font.family
                         font.pixelSize: Style.font.caption
+                    }
+                    Row {
+                        visible: root.isLive
+                        spacing: Style.space(5)
+
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Style.space(6)
+                            height: width
+                            radius: width / 2
+                            color: Color.urgent
+                        }
+                        Text {
+                            text: "LIVE"
+                            textFormat: Text.PlainText
+                            color: root.bar ? root.bar.foreground : root.tint
+                            opacity: 0.6
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.caption
+                        }
                     }
                 }
 
@@ -857,7 +899,7 @@ BarWidget {
     Timer {
         interval: 1000
         repeat: true
-        running: root.opened && root.playing
+        running: root.opened && root.playing && !root.isLive
         onTriggered: if (root.player) root.player.positionChanged()
     }
 }
