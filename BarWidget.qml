@@ -15,7 +15,10 @@ BarWidget {
     id: root
     moduleName: "oriolus.audio-visualizer"
 
-    readonly property int barCount: Math.max(4, Math.min(32, Number(setting("bars", 10))))
+    readonly property int barCount: {
+        var n = Math.round(Number(setting("bars", 10)))
+        return isFinite(n) ? Math.max(4, Math.min(32, n)) : 10
+    }
     readonly property int barThickness: 3
     readonly property int barGap: 3
     readonly property int maxLength: Math.round(barSize * 0.5)
@@ -99,12 +102,51 @@ BarWidget {
     readonly property color tint: bar ? bar.barForeground : "#cacccc"
     property var levels: []
 
+    // ---- cava ---------------------------------------------------------------
+    // Programs run by absolute path with a minimal environment. cava needs HOME
+    // to start and XDG_RUNTIME_DIR to reach PipeWire.
+    readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
+    readonly property var helperEnvironment: ({
+        PATH: "/usr/bin",
+        HOME: Quickshell.env("HOME") || "",
+        XDG_RUNTIME_DIR: runtimeDir
+    })
+
+    // cava.conf with the validated bar count, written to the user's private
+    // runtime directory before cava starts.
+    property bool cavaConfigReady: false
+    FileView {
+        id: cavaTemplate
+        path: Qt.resolvedUrl("cava.conf").toString().replace("file://", "")
+        blockLoading: true
+    }
+    FileView {
+        id: cavaConfig
+        path: root.runtimeDir ? root.runtimeDir + "/oriolus-audio-visualizer-cava.conf" : ""
+        blockWrites: true
+        atomicWrites: true
+        printErrors: false
+        onSaveFailed: root.cavaConfigReady = false
+    }
+    // Writes are synchronous (blockWrites). Marking the config ready on the next
+    // tick restarts a running cava so it picks up a new bar count.
+    function writeCavaConfig() {
+        cavaConfigReady = false
+        if (!cavaConfig.path) return
+        cavaConfig.setText(cavaTemplate.text().replace(/^\[general\]$/m, "[general]\nbars = " + barCount))
+        Qt.callLater(function () { root.cavaConfigReady = true })
+    }
+    onBarCountChanged: writeCavaConfig()
+
     Process {
         id: cava
-        running: root.playing
-        command: ["bash", "-c", "exec cava -p <(sed 's/^\\[general\\]/[general]\\nbars = " + root.barCount + "/' \"$1\")", "sh", Qt.resolvedUrl("cava.conf").toString().replace("file://", "")]
+        running: root.playing && root.cavaConfigReady
+        command: ["/usr/bin/cava", "-p", cavaConfig.path]
+        clearEnvironment: true
+        environment: root.helperEnvironment
         stdout: SplitParser {
             onRead: function (line) {
+                if (line.length > 512) return
                 var parts = line.split(";")
                 var out = []
                 for (var i = 0; i < root.barCount; i++)
@@ -143,7 +185,11 @@ BarWidget {
     property string shownArtist: ""
     onTrackTitleChanged: if (trackTitle) shownTitle = trackTitle
     onTrackArtistChanged: if (player) shownArtist = trackArtist
-    Component.onCompleted: { shownTitle = trackTitle; shownArtist = trackArtist }
+    Component.onCompleted: {
+        shownTitle = trackTitle
+        shownArtist = trackArtist
+        writeCavaConfig()
+    }
 
     Timer { id: tipDelay; interval: 400; onTriggered: root.tipWanted = true }
 
@@ -234,6 +280,48 @@ BarWidget {
                     pixelSize: Style.font.bodySmall
                     running: root.tipShown
                 }
+            }
+        }
+    }
+
+    // ---- Artwork ------------------------------------------------------------
+    // The player's artwork URL is never loaded directly: art-fetch.sh copies it
+    // to the runtime directory after checking scheme, size, type and pixel
+    // dimensions, and the card shows that copy. Only fetched while the card is open.
+    readonly property string artRequest: opened && player && player.trackArtUrl ? player.trackArtUrl : ""
+    property string artPath: ""
+    onArtRequestChanged: {
+        artPath = ""
+        artDebounce.restart()
+    }
+    Timer {
+        id: artDebounce
+        interval: 150
+        onTriggered: {
+            if (artFetch.running) artFetch.running = false
+            if (!root.artRequest || !root.runtimeDir || root.artRequest.length > 6000000) return
+            artFetch.request = root.artRequest
+            artFetch.running = true
+        }
+    }
+    Process {
+        id: artFetch
+        property string request: ""
+        command: ["/usr/bin/timeout", "20", "/usr/bin/bash", Qt.resolvedUrl("art-fetch.sh").toString().replace("file://", "")]
+        clearEnvironment: true
+        environment: root.helperEnvironment
+        stdinEnabled: true
+        onStarted: {
+            write(request)
+            stdinEnabled = false
+        }
+        onExited: stdinEnabled = true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var path = text.trim()
+                var dir = root.runtimeDir + "/oriolus-audio-visualizer/"
+                if (artFetch.request === root.artRequest && path.indexOf(dir) === 0 && path.indexOf("\n") < 0)
+                    root.artPath = path
             }
         }
     }
@@ -335,7 +423,9 @@ BarWidget {
                         Image {
                             id: art
                             anchors.fill: parent
-                            source: root.player && root.player.trackArtUrl ? root.player.trackArtUrl : ""
+                            source: root.artPath ? "file://" + root.artPath : ""
+                            sourceSize.width: 256
+                            sourceSize.height: 256
                             fillMode: Image.PreserveAspectCrop
                             asynchronous: true
                             visible: status === Image.Ready
