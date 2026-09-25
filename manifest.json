@@ -3,7 +3,7 @@
   "id": "oriolus.audio-visualizer",
   "name": "Audio Visualizer",
   "version": "1.0.0",
-  "author": "oriolus",
+  "author": "oriolescserr",
   "license": "MIT",
   "description": "Minimal audio spectrum bars with smooth animations. Takes no space until music plays, matches the bar text colour and shows track info on hover or click. Requires cava.",
   "kinds": [
