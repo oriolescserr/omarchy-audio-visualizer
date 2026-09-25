@@ -120,8 +120,13 @@ BarWidget {
         XDG_RUNTIME_DIR: runtimeDir
     })
 
-    // cava.conf with the validated bar count, written to the user's private
-    // runtime directory before cava starts.
+    // Private runtime directory, prepared and checked by check.sh (owned by this
+    // user, mode 0700, not a symlink). Nothing is written until it is ready.
+    readonly property string privateDir: runtimeDir ? runtimeDir + "/oriolus-audio-visualizer" : ""
+    property bool runtimeReady: false
+
+    // cava.conf with the validated bar count, written to the private runtime
+    // directory before cava starts.
     property bool cavaConfigReady: false
     property bool cavaConfigFailed: false
     FileView {
@@ -131,7 +136,7 @@ BarWidget {
     }
     FileView {
         id: cavaConfig
-        path: root.runtimeDir ? root.runtimeDir + "/oriolus-audio-visualizer-cava.conf" : ""
+        path: root.privateDir ? root.privateDir + "/cava.conf" : ""
         blockWrites: true
         atomicWrites: true
         printErrors: false
@@ -142,38 +147,64 @@ BarWidget {
     function writeCavaConfig() {
         cavaConfigReady = false
         cavaConfigFailed = false
-        if (!cavaConfig.path) return
+        if (!runtimeReady || !cavaConfig.path) return
         cavaConfig.setText(cavaTemplate.text().replace(/^\[general\]$/m, "[general]\nbars = " + barCount))
         Qt.callLater(function () { root.cavaConfigReady = !root.cavaConfigFailed })
     }
     onBarCountChanged: writeCavaConfig()
+    onRuntimeReadyChanged: {
+        writeCavaConfig()
+        retryArtwork()
+    }
 
-    // Checked on load and whenever the card opens, so installing cava later
-    // clears the notice without restarting the shell.
-    // cava only starts once the check has confirmed it exists.
+    // check.sh runs on load and whenever the card opens, so installing cava
+    // later clears the notice without restarting the shell. cava only starts
+    // once the check has confirmed it exists. Its output is two short lines.
     property bool cavaChecked: false
     property bool cavaInstalled: false
     readonly property string cavaInstallCommand: "omarchy pkg add cava"
     Process {
-        id: cavaCheck
-        command: ["/usr/bin/test", "-x", "/usr/bin/cava"]
+        id: envCheck
+        command: ["/usr/bin/timeout", "-k", "2", "5", "/usr/bin/bash", root.pluginFile("check.sh")]
         clearEnvironment: true
         environment: root.helperEnvironment
-        onExited: function (exitCode) {
-            root.cavaInstalled = exitCode === 0
-            root.cavaChecked = true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var lines = text.split("\n")
+                root.runtimeReady = lines.indexOf("runtime=ok") >= 0
+                root.cavaInstalled = lines.indexOf("cava=yes") >= 0
+                root.cavaChecked = true
+            }
         }
     }
     onOpenedChanged: {
         if (!opened) return
-        cavaCheck.running = true
+        envCheck.running = true
         retryArtwork()
     }
 
+    // cava keeps running for a moment after playback stops, so a quick pause or
+    // a track change does not restart it.
+    property bool cavaLinger: false
+    onPlayingChanged: {
+        if (playing) return
+        cavaLinger = true
+        cavaLingerTimer.restart()
+    }
+    Timer {
+        id: cavaLingerTimer
+        interval: 2000
+        onTriggered: root.cavaLinger = false
+    }
+
+    // cava's stderr goes to /dev/null through a fixed wrapper (the config path
+    // is a separate argument, never part of the shell text). Its stdout format
+    // is set by cava.conf: at most 32 numbers of 0-100 separated by ';' per
+    // line, so every line is bounded by construction.
     Process {
         id: cava
-        running: root.playing && root.cavaConfigReady && root.cavaInstalled
-        command: ["/usr/bin/cava", "-p", cavaConfig.path]
+        running: (root.playing || root.cavaLinger) && root.cavaConfigReady && root.cavaInstalled
+        command: ["/usr/bin/bash", "-c", "exec /usr/bin/cava -p \"$1\" 2>/dev/null", "cava", cavaConfig.path]
         clearEnvironment: true
         environment: root.helperEnvironment
         stdout: SplitParser {
@@ -185,10 +216,6 @@ BarWidget {
                     out.push(Math.min(1, (Number(parts[i]) || 0) / 100))
                 root.levels = out
             }
-        }
-        // Drained and discarded so the pipe can never fill up and stall cava.
-        stderr: SplitParser {
-            onRead: function (line) {}
         }
         onRunningChanged: if (!running) root.levels = []
     }
@@ -225,7 +252,7 @@ BarWidget {
         shownTitle = trackTitle
         shownArtist = trackArtist
         writeCavaConfig()
-        cavaCheck.running = true
+        envCheck.running = true
     }
 
     Timer { id: tipDelay; interval: 400; onTriggered: root.tipWanted = true }
@@ -385,13 +412,27 @@ BarWidget {
         onTriggered: root.startArtFetch()
     }
     // A running fetch is stopped first; the new one starts once it has exited.
+    // Fetches start at most every 500 ms, so a player that keeps changing its
+    // artwork URL cannot make the widget spawn processes continuously.
+    property real artLastStart: 0
+    Timer {
+        id: artThrottle
+        onTriggered: root.startArtFetch()
+    }
     function startArtFetch() {
         if (artFetch.running) {
             artFetch.pending = true
             artFetch.running = false
             return
         }
-        if (!artRequest || !runtimeDir || artRequest.length > 6000000) return
+        if (!artRequest || !runtimeReady || artRequest.length > 6000000) return
+        var wait = artLastStart + 500 - Date.now()
+        if (wait > 0) {
+            artThrottle.interval = wait
+            artThrottle.restart()
+            return
+        }
+        artLastStart = Date.now()
         artFetch.request = artRequest
         artFetch.running = true
     }
@@ -399,7 +440,7 @@ BarWidget {
         id: artFetch
         property string request: ""
         property bool pending: false
-        command: ["/usr/bin/timeout", "20", "/usr/bin/bash", root.pluginFile("art-fetch.sh")]
+        command: ["/usr/bin/timeout", "-k", "2", "20", "/usr/bin/bash", root.pluginFile("art-fetch.sh")]
         clearEnvironment: true
         environment: Object.assign({ ART_TAG: root.artTag }, root.helperEnvironment)
         stdinEnabled: true
@@ -417,7 +458,7 @@ BarWidget {
         stdout: StdioCollector {
             onStreamFinished: {
                 var path = text.trim()
-                var dir = root.runtimeDir + "/oriolus-audio-visualizer/"
+                var dir = root.privateDir + "/"
                 var valid = path.indexOf(dir) === 0 && path.indexOf("\n") < 0
                 if (valid) root.rememberArt(artFetch.request, path)
                 if (artFetch.request !== root.artRequest) return
@@ -533,6 +574,7 @@ BarWidget {
                                 Text {
                                     Layout.fillWidth: true
                                     text: root.cavaInstallCommand
+                                    textFormat: Text.PlainText
                                     color: root.bar ? root.bar.foreground : root.tint
                                     font.family: Style.font.family
                                     font.pixelSize: Style.font.body
@@ -676,6 +718,7 @@ BarWidget {
 
                     Text {
                         text: root.formatTime(seek.shown)
+                        textFormat: Text.PlainText
                         color: root.bar ? root.bar.foreground : root.tint
                         opacity: 0.6
                         font.family: Style.font.family
@@ -752,6 +795,7 @@ BarWidget {
 
                     Text {
                         text: root.formatTime(root.player ? root.player.length : 0)
+                        textFormat: Text.PlainText
                         color: root.bar ? root.bar.foreground : root.tint
                         opacity: 0.6
                         font.family: Style.font.family
