@@ -25,6 +25,8 @@ It works with anything that supports MPRIS: Spotify, browsers, mpv, VLC, and mor
 | **Left click**   | A card with album art, album, progress and previous / play-pause / next       |
 | **Middle click** | Pause                                                                         |
 
+Album art is only loaded while the card is open. Players that send an `https` link (Spotify, browsers) have it downloaded with `curl`, limited to 4 MiB, 10 seconds and JPEG, PNG or WebP images up to 4096 px; anything else shows a placeholder.
+
 ### Keyboard
 
 You can use the following keyboard shortcuts while the player is open:

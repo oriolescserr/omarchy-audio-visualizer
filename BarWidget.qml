@@ -106,6 +106,9 @@ BarWidget {
     // Programs run by absolute path with a minimal environment. cava needs HOME
     // to start and XDG_RUNTIME_DIR to reach PipeWire.
     readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
+    function pluginFile(name) {
+        return decodeURIComponent(Qt.resolvedUrl(name).toString().replace(/^file:\/\//, ""))
+    }
     readonly property var helperEnvironment: ({
         PATH: "/usr/bin",
         HOME: Quickshell.env("HOME") || "",
@@ -117,7 +120,7 @@ BarWidget {
     property bool cavaConfigReady: false
     FileView {
         id: cavaTemplate
-        path: Qt.resolvedUrl("cava.conf").toString().replace("file://", "")
+        path: root.pluginFile("cava.conf")
         blockLoading: true
     }
     FileView {
@@ -297,17 +300,24 @@ BarWidget {
     Timer {
         id: artDebounce
         interval: 150
-        onTriggered: {
-            if (artFetch.running) artFetch.running = false
-            if (!root.artRequest || !root.runtimeDir || root.artRequest.length > 6000000) return
-            artFetch.request = root.artRequest
-            artFetch.running = true
+        onTriggered: root.startArtFetch()
+    }
+    // A running fetch is stopped first; the new one starts once it has exited.
+    function startArtFetch() {
+        if (artFetch.running) {
+            artFetch.pending = true
+            artFetch.running = false
+            return
         }
+        if (!artRequest || !runtimeDir || artRequest.length > 6000000) return
+        artFetch.request = artRequest
+        artFetch.running = true
     }
     Process {
         id: artFetch
         property string request: ""
-        command: ["/usr/bin/timeout", "20", "/usr/bin/bash", Qt.resolvedUrl("art-fetch.sh").toString().replace("file://", "")]
+        property bool pending: false
+        command: ["/usr/bin/timeout", "20", "/usr/bin/bash", root.pluginFile("art-fetch.sh")]
         clearEnvironment: true
         environment: root.helperEnvironment
         stdinEnabled: true
@@ -315,7 +325,13 @@ BarWidget {
             write(request)
             stdinEnabled = false
         }
-        onExited: stdinEnabled = true
+        onExited: {
+            stdinEnabled = true
+            if (pending) {
+                pending = false
+                root.startArtFetch()
+            }
+        }
         stdout: StdioCollector {
             onStreamFinished: {
                 var path = text.trim()
@@ -449,6 +465,7 @@ BarWidget {
                         Text {
                             width: parent.width
                             text: root.trackTitle
+                            textFormat: Text.PlainText
                             color: root.bar ? root.bar.foreground : root.tint
                             font.family: Style.font.family
                             font.pixelSize: Style.font.title
@@ -461,6 +478,7 @@ BarWidget {
                             width: parent.width
                             visible: text !== ""
                             text: root.trackArtist
+                            textFormat: Text.PlainText
                             color: root.bar ? root.bar.foreground : root.tint
                             opacity: 0.8
                             font.family: Style.font.family
@@ -471,6 +489,7 @@ BarWidget {
                             width: parent.width
                             visible: text !== ""
                             text: root.trackAlbum
+                            textFormat: Text.PlainText
                             color: root.bar ? root.bar.foreground : root.tint
                             opacity: 0.55
                             font.family: Style.font.family
@@ -611,6 +630,7 @@ BarWidget {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     text: root.player && root.player.identity ? "Playing on " + root.player.identity : ""
+                    textFormat: Text.PlainText
                     visible: root.hasTrack && text !== ""
                     color: root.bar ? root.bar.foreground : root.tint
                     opacity: 0.45

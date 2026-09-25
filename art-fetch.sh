@@ -4,22 +4,27 @@
 # data URLs; caps the transfer size, the image type and the pixel dimensions.
 set -u
 umask 077
+# The widget starts this with a cleared environment; pinning PATH here as well
+# means every tool name below resolves only in /usr/bin.
+export PATH=/usr/bin
 
 [[ -n ${XDG_RUNTIME_DIR:-} && -d $XDG_RUNTIME_DIR ]] || exit 0
 dir="$XDG_RUNTIME_DIR/oriolus-audio-visualizer"
-/usr/bin/mkdir -p -m 700 -- "$dir" || exit 0
+mkdir -p -m 700 -- "$dir" || exit 0
 [[ -O $dir && ! -L $dir ]] || exit 0
 
 max_bytes=4194304 # 4 MiB
 max_side=4096
 
-url=$(/usr/bin/head -c 6000000)
-tmp=$(/usr/bin/mktemp -p "$dir" fetch.XXXXXXXX) || exit 0
-trap '/usr/bin/rm -f -- "$tmp"' EXIT
+url=$(head -c 6000000)
+tmp=$(mktemp -p "$dir" fetch.XXXXXXXX) || exit 0
+trap 'rm -f -- "$tmp"' EXIT
+trap 'exit 1' TERM INT HUP
 
 case $url in
   https://*)
-    /usr/bin/curl --silent --fail --location --max-redirs 3 \
+    # --disable must come first: it keeps ~/.curlrc from changing these limits.
+    curl --disable --silent --fail --location --max-redirs 3 \
       --proto '=https' --proto-redir '=https' \
       --connect-timeout 5 --max-time 10 --max-filesize "$max_bytes" \
       --output "$tmp" "$url" || exit 0
@@ -28,20 +33,20 @@ case $url in
     path=${url#file://}
     path=$(printf '%b' "${path//%/\\x}")
     [[ -f $path ]] || exit 0
-    /usr/bin/head -c "$((max_bytes + 1))" -- "$path" >"$tmp" || exit 0
+    head -c "$((max_bytes + 1))" -- "$path" >"$tmp" || exit 0
     ;;
   data:image/*\;base64,*)
-    printf '%s' "${url#*,}" | /usr/bin/base64 -d 2>/dev/null | /usr/bin/head -c "$((max_bytes + 1))" >"$tmp"
+    printf '%s' "${url#*,}" | base64 -d 2>/dev/null | head -c "$((max_bytes + 1))" >"$tmp"
     ;;
   *)
     exit 0
     ;;
 esac
 
-size=$(/usr/bin/stat -c %s -- "$tmp") || exit 0
+size=$(stat -c %s -- "$tmp") || exit 0
 ((size > 0 && size <= max_bytes)) || exit 0
 
-info=$(/usr/bin/file -b -- "$tmp")
+info=$(file -b -- "$tmp")
 case $info in
   "JPEG image data"*) ext=jpg ;;
   "PNG image data"*) ext=png ;;
@@ -59,13 +64,13 @@ done
 ((${#w} <= 5 && ${#h} <= 5)) || exit 0
 ((10#$w > 0 && 10#$h > 0 && 10#$w <= max_side && 10#$h <= max_side)) || exit 0
 
-final="$dir/art-$(/usr/bin/date +%s%N).$ext"
-/usr/bin/mv -f -- "$tmp" "$final" || exit 0
+final="$dir/art-$(date +%s%N).$ext"
+mv -f -- "$tmp" "$final" || exit 0
 trap - EXIT
 
 # Keep only the newest copy.
 for old in "$dir"/art-*; do
-  [[ $old == "$final" ]] || /usr/bin/rm -f -- "$old"
+  [[ $old == "$final" ]] || rm -f -- "$old"
 done
 
 printf '%s\n' "$final"
