@@ -148,9 +148,22 @@ BarWidget {
     }
     onBarCountChanged: writeCavaConfig()
 
+    // Checked on load and whenever the card opens, so installing cava later
+    // clears the notice without restarting the shell.
+    property bool cavaInstalled: true
+    readonly property string cavaInstallCommand: "omarchy pkg add cava"
+    Process {
+        id: cavaCheck
+        command: ["/usr/bin/test", "-x", "/usr/bin/cava"]
+        clearEnvironment: true
+        environment: root.helperEnvironment
+        onExited: function (exitCode) { root.cavaInstalled = exitCode === 0 }
+    }
+    onOpenedChanged: if (opened) cavaCheck.running = true
+
     Process {
         id: cava
-        running: root.playing && root.cavaConfigReady
+        running: root.playing && root.cavaConfigReady && root.cavaInstalled
         command: ["/usr/bin/cava", "-p", cavaConfig.path]
         clearEnvironment: true
         environment: root.helperEnvironment
@@ -199,6 +212,7 @@ BarWidget {
         shownTitle = trackTitle
         shownArtist = trackArtist
         writeCavaConfig()
+        cavaCheck.running = true
     }
 
     Timer { id: tipDelay; interval: 400; onTriggered: root.tipWanted = true }
@@ -395,6 +409,87 @@ BarWidget {
                 anchors.top: parent.top
                 spacing: Style.space(14)
 
+                // Shown when cava is missing: the bars cannot be drawn without it.
+                Rectangle {
+                    width: parent.width
+                    visible: !root.cavaInstalled
+                    implicitHeight: notice.implicitHeight + Style.space(20)
+                    color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b, 0.06)
+                    border.width: 1
+                    border.color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b, 0.25)
+                    radius: Style.cornerRadius
+
+                    Column {
+                        id: notice
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.margins: Style.space(12)
+                        spacing: Style.space(6)
+
+                        Text {
+                            text: "cava is not installed"
+                            color: root.bar ? root.bar.foreground : root.tint
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.body
+                            font.bold: true
+                        }
+                        Text {
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                            text: "The spectrum bars need it. Install it with:"
+                            color: root.bar ? root.bar.foreground : root.tint
+                            opacity: 0.7
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.caption
+                        }
+                        // Code box for the command, with the copy button inside it.
+                        Rectangle {
+                            width: parent.width
+                            implicitHeight: commandRow.implicitHeight + Style.space(8)
+                            color: Qt.rgba(0, 0, 0, 0.35)
+                            border.width: 1
+                            border.color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b, 0.18)
+                            radius: Style.cornerRadius
+
+                            RowLayout {
+                                id: commandRow
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: Style.space(12)
+                                anchors.rightMargin: Style.space(4)
+                                spacing: Style.space(8)
+
+                                Text {
+                                    text: "$"
+                                    color: root.bar ? root.bar.foreground : root.tint
+                                    opacity: 0.4
+                                    font.family: Style.font.family
+                                    font.pixelSize: Style.font.body
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: root.cavaInstallCommand
+                                    color: root.bar ? root.bar.foreground : root.tint
+                                    font.family: Style.font.family
+                                    font.pixelSize: Style.font.body
+                                }
+                                Button {
+                                    iconText: copiedTimer.running ? "󰄬" : "󰆏"
+                                    tooltipText: copiedTimer.running ? "Copied" : "Copy"
+                                    foreground: root.bar ? root.bar.foreground : root.tint
+                                    onClicked: {
+                                        Quickshell.clipboardText = root.cavaInstallCommand
+                                        copiedTimer.restart()
+                                    }
+                                    Timer { id: copiedTimer; interval: 1500 }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Shown instead of the player when there is no track.
                 Column {
                     width: parent.width
@@ -441,6 +536,7 @@ BarWidget {
                     Rectangle {
                         Layout.preferredWidth: Style.space(72)
                         Layout.preferredHeight: Style.space(72)
+                        Layout.alignment: Qt.AlignTop
                         radius: Style.cornerRadius
                         color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b, 0.08)
                         clip: true
