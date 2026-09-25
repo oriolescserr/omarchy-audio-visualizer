@@ -25,7 +25,7 @@ It works with anything that supports MPRIS: Spotify, browsers, mpv, VLC, and mor
 | **Left click**   | A card with album art, album, progress and previous / play-pause / next       |
 | **Middle click** | Pause                                                                         |
 
-Album art is fetched once per track in the background, so it’s already available when the card opens. Players that provide an `https` link, such as Spotify or web browsers, have their artwork downloaded with `curl`, with downloads limited to 4 MiB, 10 seconds, and JPEG, PNG, or WebP images up to 4096 px. Anything else shows a placeholder.
+Album art is fetched once per track in the background, so it’s already available when the card opens. Players that provide an `https` link, such as Spotify or web browsers, have their artwork downloaded with `curl` from public addresses only, without following redirects, limited to 4 MiB, 10 seconds, and JPEG, PNG, or WebP images up to 4096 px. Anything else shows a placeholder.
 
 ### Keyboard
 

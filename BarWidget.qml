@@ -186,6 +186,10 @@ BarWidget {
                 root.levels = out
             }
         }
+        // Drained and discarded so the pipe can never fill up and stall cava.
+        stderr: SplitParser {
+            onRead: function (line) {}
+        }
         onRunningChanged: if (!running) root.levels = []
     }
 
