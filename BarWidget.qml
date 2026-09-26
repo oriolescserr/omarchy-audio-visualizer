@@ -51,6 +51,8 @@ BarWidget {
     readonly property bool hasTrack: !!(player && (player.trackTitle || player.trackArtist))
 
     // ---- Card open state --------------------------------------------------
+    property string ipcTarget: "oriolus.audio-visualizer"
+    property var controller: ({})
     property bool opened: false
     function close() { opened = false }
     function toggle() { opened = !opened }
