@@ -4,9 +4,7 @@ An **Omarchy** bar widget that visualizes whatever you're listening to as a row 
 
 [Cava](https://github.com/karlstav/cava) reads the **PipeWire** audio output, allowing the bars to react to the music in real time. The widget takes up **no space at all** when nothing is playing and automatically uses the bar's own **foreground colour**.
 
-<div align="center">
-    <img src="preview.png" alt="Audio Visualizer preview" width="700">
-</div>
+<img src="preview.png" alt="Audio Visualizer preview">
 
 ## Install
 
