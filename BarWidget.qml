@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Mpris
@@ -196,6 +197,9 @@ BarWidget {
         if (!opened) return
         envCheck.running = true
         retryArtwork()
+        // The player's position is only re-read when positionChanged is sent,
+        // so without this the card opens where it was last left.
+        if (player) player.positionChanged()
     }
 
     // cava keeps running for a moment after playback stops, so a quick pause or
@@ -752,10 +756,42 @@ BarWidget {
                         property bool dragging: false
                         property real dragValue: 0
                         readonly property real length: root.player ? Math.max(1, root.player.length) : 1
-                        readonly property real shown: dragging ? dragValue : (root.player ? root.player.position : 0)
+                        // The player only reports its position about once a second, so
+                        // between reports it is extrapolated on every frame. A report
+                        // that disagrees by more than 0.3 s (seek, new track) re-syncs it.
+                        property real anchorPos: 0
+                        property real anchorMs: Date.now()
+                        property real nowMs: Date.now()
+                        readonly property real predicted: root.playing ? anchorPos + (nowMs - anchorMs) / 1000 : anchorPos
+                        readonly property real shown: dragging ? dragValue : Math.max(0, Math.min(length, predicted))
                         readonly property real progress: root.isLive ? 1 : Math.max(0, Math.min(1, shown / length))
                         readonly property bool hot: root.canSeek && (seekMouse.containsMouse || dragging)
                         readonly property color fg: root.bar ? root.bar.foreground : root.tint
+
+                        function sync(force) {
+                            if (!root.player) return
+                            var actual = Number(root.player.position) || 0
+                            nowMs = Date.now()
+                            if (force || Math.abs(predicted - actual) > 0.3) {
+                                anchorPos = actual
+                                anchorMs = nowMs
+                            }
+                        }
+                        Component.onCompleted: sync(true)
+                        Connections {
+                            target: root.player
+                            function onPositionChanged() { seek.sync(false) }
+                        }
+                        Connections {
+                            target: root
+                            function onPlayerChanged() { seek.sync(true) }
+                            function onPlayingChanged() { seek.sync(true) }
+                            function onOpenedChanged() { if (root.opened) seek.sync(true) }
+                        }
+                        FrameAnimation {
+                            running: root.opened && root.playing && !root.isLive && seek.visible
+                            onTriggered: seek.nowMs = Date.now()
+                        }
 
                         Rectangle {
                             id: track
@@ -774,17 +810,35 @@ BarWidget {
                             }
                         }
 
-                        Rectangle {
-                            width: Style.space(11)
+                        // Knob: even-sized like the track and placed from the
+                        // track's own position, so both share the same centre
+                        // line. Drawn as a true curve, since a rounded Rectangle
+                        // this small is tessellated into a visible polygon.
+                        Shape {
+                            id: knobCircle
+                            width: 2 * Math.round(Style.space(11) / 2)
                             height: width
-                            radius: width / 2
-                            color: seek.fg
-                            y: Math.round((parent.height - height) / 2)
+                            y: track.y + (track.height - height) / 2
                             x: Math.max(0, Math.min(seek.width - width, seek.width * seek.progress - width / 2))
+                            preferredRendererType: Shape.CurveRenderer
+                            antialiasing: true
                             opacity: seek.hot ? 1 : 0
                             scale: seek.hot ? 1 : 0.4
                             Behavior on opacity { NumberAnimation { duration: 120 } }
                             Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+
+                            ShapePath {
+                                fillColor: seek.fg
+                                strokeColor: "transparent"
+                                PathAngleArc {
+                                    centerX: knobCircle.width / 2
+                                    centerY: knobCircle.height / 2
+                                    radiusX: knobCircle.width / 2
+                                    radiusY: knobCircle.height / 2
+                                    startAngle: 0
+                                    sweepAngle: 360
+                                }
+                            }
                         }
 
                         MouseArea {
@@ -895,10 +949,12 @@ BarWidget {
         }
     }
 
-    // Keeps the progress bar moving while the card is open.
+    // Keeps the progress bar moving while the card is open, starting at once
+    // when it opens or playback resumes.
     Timer {
         interval: 1000
         repeat: true
+        triggeredOnStart: true
         running: root.opened && root.playing && !root.isLive
         onTriggered: if (root.player) root.player.positionChanged()
     }
