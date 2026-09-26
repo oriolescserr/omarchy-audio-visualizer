@@ -1,5 +1,6 @@
 import QtQuick
-import QtQuick.Layoutsimport QtQuick.Shapes
+import QtQuick.Layouts
+import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Mpris
@@ -755,10 +756,42 @@ BarWidget {
                         property bool dragging: false
                         property real dragValue: 0
                         readonly property real length: root.player ? Math.max(1, root.player.length) : 1
-                        readonly property real shown: dragging ? dragValue : (root.player ? root.player.position : 0)
+                        // The player only reports its position about once a second, so
+                        // between reports it is extrapolated on every frame. A report
+                        // that disagrees by more than 0.3 s (seek, new track) re-syncs it.
+                        property real anchorPos: 0
+                        property real anchorMs: Date.now()
+                        property real nowMs: Date.now()
+                        readonly property real predicted: root.playing ? anchorPos + (nowMs - anchorMs) / 1000 : anchorPos
+                        readonly property real shown: dragging ? dragValue : Math.max(0, Math.min(length, predicted))
                         readonly property real progress: root.isLive ? 1 : Math.max(0, Math.min(1, shown / length))
                         readonly property bool hot: root.canSeek && (seekMouse.containsMouse || dragging)
                         readonly property color fg: root.bar ? root.bar.foreground : root.tint
+
+                        function sync(force) {
+                            if (!root.player) return
+                            var actual = Number(root.player.position) || 0
+                            nowMs = Date.now()
+                            if (force || Math.abs(predicted - actual) > 0.3) {
+                                anchorPos = actual
+                                anchorMs = nowMs
+                            }
+                        }
+                        Component.onCompleted: sync(true)
+                        Connections {
+                            target: root.player
+                            function onPositionChanged() { seek.sync(false) }
+                        }
+                        Connections {
+                            target: root
+                            function onPlayerChanged() { seek.sync(true) }
+                            function onPlayingChanged() { seek.sync(true) }
+                            function onOpenedChanged() { if (root.opened) seek.sync(true) }
+                        }
+                        FrameAnimation {
+                            running: root.opened && root.playing && !root.isLive && seek.visible
+                            onTriggered: seek.nowMs = Date.now()
+                        }
 
                         Rectangle {
                             id: track
