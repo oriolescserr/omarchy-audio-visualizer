@@ -275,9 +275,29 @@ BarWidget {
         shownArtist = trackArtist
         writeCavaConfig()
         envCheck.running = true
+        syncClickRegistration()
     }
 
     Timer { id: tipDelay; interval: 400; onTriggered: root.tipWanted = true }
+
+    // The bar wraps every module in a slot whose own MouseArea sets the cursor
+    // and handles left clicks, but only for registered click targets with a
+    // triggerPress(). Registering also lets an open panel forward a click on
+    // this widget, as it does for the shell's own buttons.
+    function triggerPress(button) {
+        tipDelay.stop()
+        tipWanted = false
+        if (button === Qt.MiddleButton) playPause()
+        else toggle()
+    }
+    property var registeredBar: null
+    function syncClickRegistration() {
+        if (registeredBar && registeredBar.unregisterClickTarget) registeredBar.unregisterClickTarget(root)
+        registeredBar = bar
+        if (registeredBar && registeredBar.registerClickTarget) registeredBar.registerClickTarget(root)
+    }
+    onBarChanged: syncClickRegistration()
+    Component.onDestruction: if (registeredBar && registeredBar.unregisterClickTarget) registeredBar.unregisterClickTarget(root)
 
     MouseArea {
         id: hoverArea
@@ -287,15 +307,7 @@ BarWidget {
         acceptedButtons: Qt.LeftButton | Qt.MiddleButton
         onEntered: tipDelay.restart()
         onExited: { tipDelay.stop(); root.tipWanted = false }
-        onClicked: function (mouse) {
-            tipDelay.stop()
-            root.tipWanted = false
-            if (mouse.button === Qt.MiddleButton) {
-                root.playPause()
-            } else {
-                root.toggle()
-            }
-        }
+        onClicked: function (mouse) { root.triggerPress(mouse.button) }
     }
 
     // Tooltip styled like the bar's native one: title above artist.
