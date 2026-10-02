@@ -1,6 +1,4 @@
 import QtQuick
-import QtQuick.Layouts
-import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Mpris
@@ -10,12 +8,20 @@ import qs.Ui
 // Spectrum bars driven by cava. Collapses to zero size and runs nothing
 // unless an MPRIS player is playing. Colour follows the bar's own text
 // colour, so themes and transparent-bar mode apply automatically.
-//   hover : the bar's native tooltip with the current track
-//   click : a card with artwork, track details, progress and controls
+//   hover        : a tooltip with the current track (TrackTooltip.qml)
+//   click        : a card with artwork, track details, progress and controls
+//                  (Card.qml)
+//   middle click : play/pause
+// This file holds the player state and the actions every part shares, and
+// wires up the parts that live in their own files: Cava.qml runs cava,
+// ArtworkFetcher.qml copies the artwork, and Card.qml builds the card.
 BarWidget {
     id: root
     moduleName: "oriolus.audio-visualizer"
 
+    // ---- Bar geometry and colour --------------------------------------------
+    // The bar count comes from the widget settings ("Number of bars"),
+    // clamped to the 4-32 range the manifest allows.
     readonly property int barCount: {
         var n = Math.round(Number(setting("bars", 10)))
         return isFinite(n) ? Math.max(4, Math.min(32, n)) : 10
@@ -26,8 +32,12 @@ BarWidget {
     // Outer padding so the gap to neighbouring icons matches the icon-to-icon gap.
     readonly property int margin: Math.max(0, Math.round((Style.bar.iconSlot - Style.bar.iconCanvas) / 2))
     readonly property int span: barCount * barThickness + (barCount - 1) * barGap
+    // Bar text colour, used for the bars and as the card's accent tint.
+    readonly property color tint: bar ? bar.barForeground : "#cacccc"
 
-    // ---- Player state -----------------------------------------------------
+    // ---- Player state -------------------------------------------------------
+    // The first MPRIS player that is playing drives the bars, the tooltip and
+    // the card. Everything else reads `player` and the track fields below.
     readonly property var playerList: Mpris.players ? Mpris.players.values : []
     readonly property var playingPlayer: {
         for (var i = 0; i < playerList.length; i++)
@@ -50,7 +60,9 @@ BarWidget {
     readonly property string trackAlbum: player ? clipText(player.trackAlbum) : ""
     readonly property bool hasTrack: !!(player && (player.trackTitle || player.trackArtist))
 
-    // ---- Card open state --------------------------------------------------
+    // ---- Card open state ----------------------------------------------------
+    // Fillet recognises a widget with a panel by these three properties
+    // (ipcTarget, opened, controller) and joins its corners to the open card.
     property string ipcTarget: "oriolus.audio-visualizer"
     property var controller: ({})
     property bool opened: false
@@ -59,7 +71,7 @@ BarWidget {
     function toggle() { opened = !opened }
     onPlayerChanged: if (!player) opened = false
 
-    // ---- Playback actions -------------------------------------------------
+    // ---- Playback actions ---------------------------------------------------
     // Live streams report an effectively infinite length (browsers send the
     // largest 64-bit value), so anything over a week is treated as live. Players
     // send no stream start time, and browsers report a position that restarts
@@ -95,7 +107,8 @@ BarWidget {
         player.volume = Math.max(0, Math.min(1, player.volume + delta))
     }
 
-    // IPC: omarchy-shell oriolus.audio-visualizer <function>
+    // ---- IPC ----------------------------------------------------------------
+    // omarchy-shell oriolus.audio-visualizer <function>
     IpcHandler {
         target: "oriolus.audio-visualizer"
         function toggle(): void { root.toggle() }
@@ -108,12 +121,13 @@ BarWidget {
         function back(): void { root.seekBy(-10) }
     }
 
-    // ---- Reveal animation -------------------------------------------------
+    // ---- Reveal animation ---------------------------------------------------
     // 0 = hidden and zero-sized, 1 = fully shown. Drives size and opacity
     // together so the widget eases in and out without popping.
     property real reveal: (playing || opened) ? 1 : 0
     Behavior on reveal { NumberAnimation { duration: 320; easing.type: Easing.InOutCubic } }
 
+    // Size once fully shown; the real size grows towards it with `reveal`.
     readonly property int fullWidth: vertical ? barSize : span + 2 * margin
     readonly property int fullHeight: vertical ? span + 2 * margin : barSize
 
@@ -123,6 +137,7 @@ BarWidget {
     implicitWidth: vertical ? fullWidth : Math.round(fullWidth * reveal)
     implicitHeight: vertical ? Math.round(fullHeight * reveal) : fullHeight
 
+    // ---- Card anchor and open-panel line ------------------------------------
     // Where the widget ends up once fully shown. The card is centred on this
     // instead of on the widget, so opening it while nothing plays does not
     // slide it along as the widget grows. The edge that stays put depends on
@@ -172,13 +187,11 @@ BarWidget {
         Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
     }
 
-    readonly property color tint: bar ? bar.barForeground : "#cacccc"
-    property var levels: []
-
-    // ---- cava ---------------------------------------------------------------
+    // ---- Helpers and environment check --------------------------------------
     // Programs run by absolute path with a minimal environment. cava needs HOME
     // to start and XDG_RUNTIME_DIR to reach PipeWire.
     readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
+    // Absolute path of a file shipped with the plugin (scripts, cava.conf).
     function pluginFile(name) {
         return decodeURIComponent(Qt.resolvedUrl(name).toString().replace(/^file:\/\//, ""))
     }
@@ -192,38 +205,6 @@ BarWidget {
     // user, mode 0700, not a symlink). Nothing is written until it is ready.
     readonly property string privateDir: runtimeDir ? runtimeDir + "/oriolus-audio-visualizer" : ""
     property bool runtimeReady: false
-
-    // cava.conf with the validated bar count, written to the private runtime
-    // directory before cava starts.
-    property bool cavaConfigReady: false
-    property bool cavaConfigFailed: false
-    FileView {
-        id: cavaTemplate
-        path: root.pluginFile("cava.conf")
-        blockLoading: true
-    }
-    FileView {
-        id: cavaConfig
-        path: root.privateDir ? root.privateDir + "/cava.conf" : ""
-        blockWrites: true
-        atomicWrites: true
-        printErrors: false
-        onSaveFailed: root.cavaConfigFailed = true
-    }
-    // Writes are synchronous (blockWrites). Marking the config ready on the next
-    // tick restarts a running cava so it picks up a new bar count.
-    function writeCavaConfig() {
-        cavaConfigReady = false
-        cavaConfigFailed = false
-        if (!runtimeReady || !cavaConfig.path) return
-        cavaConfig.setText(cavaTemplate.text().replace(/^\[general\]$/m, "[general]\nbars = " + barCount))
-        Qt.callLater(function () { root.cavaConfigReady = !root.cavaConfigFailed })
-    }
-    onBarCountChanged: writeCavaConfig()
-    onRuntimeReadyChanged: {
-        writeCavaConfig()
-        retryArtwork()
-    }
 
     // check.sh runs on load and whenever the card opens, so installing cava
     // later clears the notice without restarting the shell. cava only starts
@@ -245,57 +226,41 @@ BarWidget {
             }
         }
     }
+    // On load: check the environment, register for clicks with the bar and
+    // seed the tooltip text.
+    Component.onCompleted: {
+        envCheck.running = true
+        syncClickRegistration()
+        shownTitle = trackTitle
+        shownArtist = trackArtist
+    }
     onOpenedChanged: {
         if (!opened) return
         envCheck.running = true
-        retryArtwork()
+        artwork.retry()
         // The player's position is only re-read when positionChanged is sent,
         // so without this the card opens where it was last left.
         if (player) player.positionChanged()
     }
 
-    // cava keeps running for a moment after playback stops, so a quick pause or
-    // a track change does not restart it.
-    property bool cavaLinger: false
-    onPlayingChanged: {
-        if (playing) return
-        cavaLinger = true
-        cavaLingerTimer.restart()
-    }
-    Timer {
-        id: cavaLingerTimer
-        interval: 2000
-        onTriggered: root.cavaLinger = false
-    }
-
-    // cava's stderr goes to /dev/null through a fixed wrapper (the config path
-    // is a separate argument, never part of the shell text). Its stdout format
-    // is set by cava.conf: at most 32 numbers of 0-100 separated by ';' per
-    // line, so every line is bounded by construction.
-    Process {
+    // ---- Bars ---------------------------------------------------------------
+    // Cava.qml turns the audio into one level per bar; the bars just draw them.
+    Cava {
         id: cava
-        running: (root.playing || root.cavaLinger) && root.cavaConfigReady && root.cavaInstalled
-        command: ["/usr/bin/bash", "-c", "exec /usr/bin/cava -p \"$1\" 2>/dev/null", "cava", cavaConfig.path]
-        clearEnvironment: true
+        barCount: root.barCount
+        playing: root.playing
+        runtimeReady: root.runtimeReady
+        installed: root.cavaInstalled
+        privateDir: root.privateDir
         environment: root.helperEnvironment
-        stdout: SplitParser {
-            onRead: function (line) {
-                if (line.length > 512) return
-                var parts = line.split(";")
-                var out = []
-                for (var i = 0; i < root.barCount; i++)
-                    out.push(Math.min(1, (Number(parts[i]) || 0) / 100))
-                root.levels = out
-            }
-        }
-        onRunningChanged: if (!running) root.levels = []
+        templatePath: root.pluginFile("cava.conf")
     }
 
     Repeater {
         model: root.barCount
         Rectangle {
             required property int index
-            readonly property real level: root.levels.length > index ? root.levels[index] : 0
+            readonly property real level: cava.levels.length > index ? cava.levels[index] : 0
             readonly property real len: Math.max(root.barThickness, level * root.maxLength)
 
             radius: root.barThickness / 2
@@ -312,20 +277,15 @@ BarWidget {
         }
     }
 
-    // ---- Hover (native bar tooltip) and click -----------------------------
+    // ---- Hover (tooltip) and click ------------------------------------------
+    // The tooltip appears after a short hover and keeps the last title and
+    // artist while it fades out, so it never blanks mid-fade.
     property bool tipWanted: false
     readonly property bool tipShown: tipWanted && playing && !opened && trackTitle !== ""
     property string shownTitle: ""
     property string shownArtist: ""
     onTrackTitleChanged: if (trackTitle) shownTitle = trackTitle
     onTrackArtistChanged: if (player) shownArtist = trackArtist
-    Component.onCompleted: {
-        shownTitle = trackTitle
-        shownArtist = trackArtist
-        writeCavaConfig()
-        envCheck.running = true
-        syncClickRegistration()
-    }
 
     Timer { id: tipDelay; interval: 400; onTriggered: root.tipWanted = true }
 
@@ -359,677 +319,33 @@ BarWidget {
         onClicked: function (mouse) { root.triggerPress(mouse.button) }
     }
 
-    // Tooltip styled like the bar's native one: title above artist.
-    PopupWindow {
-        id: tip
-        visible: root.tipShown || tipBubble.opacity > 0.01
-        color: "transparent"
-        implicitWidth: Math.ceil(tipBubble.implicitWidth)
-        implicitHeight: Math.ceil(tipBubble.implicitHeight)
-
-        anchor {
-            id: tipAnchor
-            window: root.QsWindow.window
-            adjustment: PopupAdjustment.Slide
-            edges: Edges.Top | Edges.Left
-            gravity: Edges.Bottom | Edges.Right
-            rect.width: 1
-            rect.height: 1
-
-            onAnchoring: {
-                var win = root.QsWindow.window
-                if (!win) return
-                var pos = root.bar ? root.bar.position : "top"
-                var x = root.width / 2 - tip.implicitWidth / 2
-                var y = root.height + 6
-                if (pos === "bottom") y = -tip.implicitHeight - 6
-                else if (pos === "left") { x = root.width + 6; y = root.height / 2 - tip.implicitHeight / 2 }
-                else if (pos === "right") { x = -tip.implicitWidth - 6; y = root.height / 2 - tip.implicitHeight / 2 }
-                var point = win.contentItem.mapFromItem(root, x, y)
-                tipAnchor.rect.x = Math.round(point.x)
-                tipAnchor.rect.y = Math.round(point.y)
-            }
-        }
-
-        BorderSurface {
-            id: tipBubble
-            implicitWidth: Math.max(tipTitle.implicitWidth, tipArtist.implicitWidth) + 28
-            implicitHeight: tipColumn.implicitHeight + 14
-            color: Color.tooltip.background
-            borderSpec: Border.surfaceSpec("tooltip", "border", Color.tooltip.border, 1)
-            radius: Style.cornerRadius
-            opacity: root.tipShown ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-
-            Column {
-                id: tipColumn
-                anchors.centerIn: parent
-                spacing: 2
-
-                Marquee {
-                    id: tipTitle
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: root.shownTitle
-                    color: Color.tooltip.text
-                    fontFamily: Style.font.family
-                    pixelSize: Style.font.subtitle
-                    bold: true
-                    running: root.tipShown
-                }
-                Marquee {
-                    id: tipArtist
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    visible: text !== ""
-                    text: root.shownArtist
-                    color: Color.tooltip.text
-                    opacity: 0.7
-                    fontFamily: Style.font.family
-                    pixelSize: Style.font.bodySmall
-                    running: root.tipShown
-                }
-            }
-        }
+    TrackTooltip {
+        anchorItem: root
+        barPosition: root.bar ? root.bar.position : "top"
+        shown: root.tipShown
+        title: root.shownTitle
+        artist: root.shownArtist
     }
 
-    // ---- Artwork ------------------------------------------------------------
-    // The player's artwork URL is never loaded directly: art-fetch.sh copies it
-    // to the runtime directory after checking scheme, size, type and pixel
-    // dimensions, and the card shows that copy. Fetched once per track in the
-    // background, so the card opens with the artwork already there.
-    readonly property string artRequest: player && player.trackArtUrl ? player.trackArtUrl : ""
-    property string artPath: ""
-    property string artFetchedFor: ""
-    // Only the copy made for the current URL is shown, never a previous track's.
-    readonly property string artShown: artRequest && artRequest === artFetchedFor ? artPath : ""
-    // Tags this instance's files; the bar creates one widget per monitor.
-    readonly property string artTag: "w" + Math.floor(Math.random() * 1e12).toString(36)
-    // The last 10 copies are remembered (keyed by a hash, since data URLs can be
-    // megabytes), so going back to a recent track shows its artwork at once.
-    readonly property int artCacheSize: 10
-    property var artCache: ({})
-    property var artCacheOrder: []
-    function rememberArt(url, path) {
-        var key = Qt.md5(url)
-        if (!(key in artCache)) {
-            artCacheOrder.push(key)
-            if (artCacheOrder.length > artCacheSize) delete artCache[artCacheOrder.shift()]
-        }
-        artCache[key] = path
-    }
-    function forgetArt(url) {
-        var key = Qt.md5(url)
-        delete artCache[key]
-        artCacheOrder = artCacheOrder.filter(function (k) { return k !== key })
-    }
-    onArtRequestChanged: {
-        if (!artRequest || artRequest === artFetchedFor) return
-        var cached = artCache[Qt.md5(artRequest)]
-        if (cached) {
-            artPath = cached
-            artFetchedFor = artRequest
-            return
-        }
-        artDebounce.restart()
-    }
-    // A copy that cannot be decoded is fetched again once; if the fresh copy
-    // fails too, the placeholder stays instead of refetching in a loop.
-    property string artRetriedFor: ""
-    function artLoadFailed() {
-        if (!artRequest) return
-        forgetArt(artRequest)
-        if (artRetriedFor === artRequest) {
-            artPath = ""
-            return
-        }
-        artRetriedFor = artRequest
-        artFetchedFor = ""
-        artDebounce.restart()
-    }
-    // A fetch that failed (for example offline) is retried when the card opens.
-    function retryArtwork() {
-        if (artRequest && !artShown && !artFetch.running) artDebounce.restart()
-    }
-    Timer {
-        id: artDebounce
-        interval: 80
-        onTriggered: root.startArtFetch()
-    }
-    // A running fetch is stopped first; the new one starts once it has exited.
-    // Fetches start at most every 500 ms, so a player that keeps changing its
-    // artwork URL cannot make the widget spawn processes continuously.
-    property real artLastStart: 0
-    Timer {
-        id: artThrottle
-        onTriggered: root.startArtFetch()
-    }
-    function startArtFetch() {
-        if (artFetch.running) {
-            artFetch.pending = true
-            artFetch.running = false
-            return
-        }
-        if (!artRequest || !runtimeReady || artRequest.length > 6000000) return
-        var wait = artLastStart + 500 - Date.now()
-        if (wait > 0) {
-            artThrottle.interval = wait
-            artThrottle.restart()
-            return
-        }
-        artLastStart = Date.now()
-        artFetch.request = artRequest
-        artFetch.running = true
-    }
-    Process {
-        id: artFetch
-        property string request: ""
-        property bool pending: false
-        command: ["/usr/bin/timeout", "-k", "2", "20", "/usr/bin/bash", root.pluginFile("art-fetch.sh")]
-        clearEnvironment: true
-        environment: Object.assign({ ART_TAG: root.artTag }, root.helperEnvironment)
-        stdinEnabled: true
-        onStarted: {
-            write(request)
-            stdinEnabled = false
-        }
-        onExited: {
-            stdinEnabled = true
-            if (pending) {
-                pending = false
-                root.startArtFetch()
-            }
-        }
-        stdout: StdioCollector {
-            onStreamFinished: {
-                var path = text.trim()
-                var dir = root.privateDir + "/"
-                var valid = path.indexOf(dir) === 0 && path.indexOf("\n") < 0
-                if (valid) root.rememberArt(artFetch.request, path)
-                if (artFetch.request !== root.artRequest) return
-                root.artPath = valid ? path : ""
-                root.artFetchedFor = artFetch.request
-            }
-        }
+    // ---- Card ---------------------------------------------------------------
+    // The artwork is fetched in the background even while the card is closed,
+    // so it is already there when the card opens.
+    ArtworkFetcher {
+        id: artwork
+        url: root.player && root.player.trackArtUrl ? root.player.trackArtUrl : ""
+        runtimeReady: root.runtimeReady
+        privateDir: root.privateDir
+        environment: root.helperEnvironment
+        scriptPath: root.pluginFile("art-fetch.sh")
     }
 
-    // ---- Card -------------------------------------------------------------
-    function formatTime(seconds) {
-        var s = Math.max(0, Math.floor(Number(seconds) || 0))
-        var m = Math.floor(s / 60)
-        var h = Math.floor(m / 60)
-        var ss = ("0" + (s % 60)).slice(-2)
-        return h > 0 ? h + ":" + ("0" + (m % 60)).slice(-2) + ":" + ss : m + ":" + ss
-    }
-
-    // Keys: Space/Enter play/pause, ←/→ (h/l) seek 5 s, ↑/↓ (k/j) volume,
-    // n/p next/previous, 0–9 jump to 0–90 %, Esc close.
-    KeyboardPanel {
-        id: card
+    Card {
+        widget: root
         anchorItem: cardAnchor
-        owner: root
-        bar: root.bar
-        open: root.opened
-        focusTarget: keys
-        contentWidth: card.fittedContentWidth(Style.space(320))
-        contentHeight: card.fittedContentHeight(column.implicitHeight)
-
-        PanelKeyCatcher {
-            id: keys
-            anchors.fill: parent
-            onActivateRequested: root.playPause()
-            onCloseRequested: root.close()
-            onMoveRequested: function (dx, dy) {
-                if (dx !== 0) root.seekBy(dx * 5)
-                if (dy !== 0) root.changeVolume(-dy * 0.05)
-            }
-            onTextKey: function (t) {
-                var key = t.toLowerCase()
-                if (key === "n") root.nextTrack()
-                else if (key === "p") root.previousTrack()
-                else if (key >= "0" && key <= "9" && root.canSeek) root.seekTo(root.player.length * Number(key) / 10)
-            }
-
-            Column {
-                id: column
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                spacing: Style.space(14)
-
-                // Shown when cava is missing: the bars cannot be drawn without it.
-                Rectangle {
-                    width: parent.width
-                    visible: root.cavaChecked && !root.cavaInstalled
-                    implicitHeight: notice.implicitHeight + Style.space(20)
-                    color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b, 0.06)
-                    border.width: 1
-                    border.color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b, 0.25)
-                    radius: Style.cornerRadius
-
-                    Column {
-                        id: notice
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.margins: Style.space(12)
-                        spacing: Style.space(6)
-
-                        Text {
-                            text: "cava is not installed"
-                            color: root.bar ? root.bar.foreground : root.tint
-                            font.family: Style.font.family
-                            font.pixelSize: Style.font.body
-                            font.bold: true
-                        }
-                        Text {
-                            width: parent.width
-                            wrapMode: Text.Wrap
-                            text: "The spectrum bars need it. Install it with:"
-                            color: root.bar ? root.bar.foreground : root.tint
-                            opacity: 0.7
-                            font.family: Style.font.family
-                            font.pixelSize: Style.font.caption
-                        }
-                        // Code box for the command, with the copy button inside it.
-                        Rectangle {
-                            width: parent.width
-                            implicitHeight: commandRow.implicitHeight + Style.space(8)
-                            color: Qt.rgba(0, 0, 0, 0.35)
-                            border.width: 1
-                            border.color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b, 0.18)
-                            radius: Style.cornerRadius
-
-                            RowLayout {
-                                id: commandRow
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                anchors.leftMargin: Style.space(12)
-                                anchors.rightMargin: Style.space(4)
-                                spacing: Style.space(8)
-
-                                Text {
-                                    text: "$"
-                                    color: root.bar ? root.bar.foreground : root.tint
-                                    opacity: 0.4
-                                    font.family: Style.font.family
-                                    font.pixelSize: Style.font.body
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: root.cavaInstallCommand
-                                    textFormat: Text.PlainText
-                                    color: root.bar ? root.bar.foreground : root.tint
-                                    font.family: Style.font.family
-                                    font.pixelSize: Style.font.body
-                                }
-                                Button {
-                                    iconText: copiedTimer.running ? "󰄬" : "󰆏"
-                                    tooltipText: copiedTimer.running ? "Copied" : "Copy"
-                                    foreground: root.bar ? root.bar.foreground : root.tint
-                                    onClicked: {
-                                        Quickshell.clipboardText = root.cavaInstallCommand
-                                        copiedTimer.restart()
-                                    }
-                                    Timer { id: copiedTimer; interval: 1500 }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Shown instead of the player when there is no track.
-                Column {
-                    width: parent.width
-                    visible: !root.hasTrack
-                    topPadding: Style.space(10)
-                    bottomPadding: Style.space(10)
-                    spacing: Style.space(6)
-
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "󰎊"
-                        color: root.bar ? root.bar.foreground : root.tint
-                        opacity: 0.35
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.display
-                    }
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "Nothing playing"
-                        color: root.bar ? root.bar.foreground : root.tint
-                        opacity: 0.8
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.body
-                        font.bold: true
-                    }
-                    Text {
-                        width: parent.width
-                        horizontalAlignment: Text.AlignHCenter
-                        wrapMode: Text.Wrap
-                        text: "Start music in any player to see it here"
-                        color: root.bar ? root.bar.foreground : root.tint
-                        opacity: 0.45
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption
-                    }
-                }
-
-                // Artwork + track details
-                RowLayout {
-                    width: parent.width
-                    height: Style.space(72)
-                    visible: root.hasTrack
-                    spacing: Style.space(14)
-
-                    Rectangle {
-                        Layout.preferredWidth: Style.space(72)
-                        Layout.preferredHeight: Style.space(72)
-                        Layout.alignment: Qt.AlignTop
-                        radius: Style.cornerRadius
-                        color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b, 0.08)
-                        clip: true
-
-                        Image {
-                            id: art
-                            anchors.fill: parent
-                            source: root.artShown ? "file://" + root.artShown : ""
-                            sourceSize.width: 256
-                            sourceSize.height: 256
-                            fillMode: Image.PreserveAspectCrop
-                            asynchronous: true
-                            visible: status === Image.Ready
-                            onStatusChanged: if (status === Image.Error) root.artLoadFailed()
-                        }
-                        Text {
-                            anchors.centerIn: parent
-                            visible: art.status !== Image.Ready
-                            text: "󰎆"
-                            color: root.tint
-                            opacity: 0.5
-                            font.family: Style.font.family
-                            font.pixelSize: Style.font.display
-                        }
-                    }
-
-                    // A fixed-height, clipped frame so a two-line title never
-                    // grows the row (and pushes the progress bar down)
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-
-                        Column {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: Style.space(3)
-
-                            Text {
-                                width: parent.width
-                                text: root.trackTitle
-                                textFormat: Text.PlainText
-                                color: root.bar ? root.bar.foreground : root.tint
-                                font.family: Style.font.family
-                                font.pixelSize: Style.font.title
-                                font.bold: true
-                                elide: Text.ElideRight
-                                maximumLineCount: 2
-                                wrapMode: Text.Wrap
-                            }
-                            Text {
-                                width: parent.width
-                                visible: text !== ""
-                                text: root.trackArtist
-                                textFormat: Text.PlainText
-                                color: root.bar ? root.bar.foreground : root.tint
-                                opacity: 0.8
-                                font.family: Style.font.family
-                                font.pixelSize: Style.font.body
-                                elide: Text.ElideRight
-                            }
-                            Text {
-                                width: parent.width
-                                visible: text !== ""
-                                text: root.trackAlbum
-                                textFormat: Text.PlainText
-                                color: root.bar ? root.bar.foreground : root.tint
-                                opacity: 0.55
-                                font.family: Style.font.family
-                                font.pixelSize: Style.font.bodySmall
-                                elide: Text.ElideRight
-                            }
-                        }
-                    }
-                }
-
-                // Progress: elapsed time, seek bar and length. Click, drag or
-                // scroll to seek; the knob shows only on hover or drag. On a live
-                // stream the times are hidden, the bar stays full and a LIVE
-                // marker takes the length's place; scroll and arrows still send
-                // relative seeks.
-                RowLayout {
-                    width: parent.width
-                    spacing: Style.space(10)
-                    visible: root.hasTrack && root.player.lengthSupported && root.player.length > 0
-
-                    Text {
-                        visible: !root.isLive
-                        text: root.formatTime(seek.shown)
-                        textFormat: Text.PlainText
-                        color: root.bar ? root.bar.foreground : root.tint
-                        opacity: 0.6
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption
-                    }
-
-                    Item {
-                        id: seek
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: Style.space(14)
-
-                        property bool dragging: false
-                        property real dragValue: 0
-                        readonly property real length: root.player ? Math.max(1, root.player.length) : 1
-                        // The player only reports its position about once a second, so
-                        // between reports it is extrapolated on every frame. A report
-                        // that disagrees by more than 0.3 s (seek, new track) re-syncs it.
-                        property real anchorPos: 0
-                        property real anchorMs: Date.now()
-                        property real nowMs: Date.now()
-                        readonly property real predicted: root.playing ? anchorPos + (nowMs - anchorMs) / 1000 : anchorPos
-                        readonly property real shown: dragging ? dragValue : Math.max(0, Math.min(length, predicted))
-                        readonly property real progress: root.isLive ? 1 : Math.max(0, Math.min(1, shown / length))
-                        readonly property bool hot: root.canSeek && (seekMouse.containsMouse || dragging)
-                        readonly property color fg: root.bar ? root.bar.foreground : root.tint
-
-                        function sync(force) {
-                            if (!root.player) return
-                            var actual = Number(root.player.position) || 0
-                            nowMs = Date.now()
-                            if (force || Math.abs(predicted - actual) > 0.3) {
-                                anchorPos = actual
-                                anchorMs = nowMs
-                            }
-                        }
-                        Component.onCompleted: sync(true)
-                        Connections {
-                            target: root.player
-                            function onPositionChanged() { seek.sync(false) }
-                        }
-                        Connections {
-                            target: root
-                            function onPlayerChanged() { seek.sync(true) }
-                            function onPlayingChanged() { seek.sync(true) }
-                            function onOpenedChanged() { if (root.opened) seek.sync(true) }
-                        }
-                        FrameAnimation {
-                            running: root.opened && root.playing && !root.isLive && seek.visible
-                            onTriggered: seek.nowMs = Date.now()
-                        }
-
-                        Rectangle {
-                            id: track
-                            y: Math.round((parent.height - height) / 2)
-                            width: parent.width
-                            height: 4
-                            radius: height / 2
-                            color: Qt.rgba(seek.fg.r, seek.fg.g, seek.fg.b, seek.hot ? 0.28 : 0.18)
-                            Behavior on color { ColorAnimation { duration: 120 } }
-
-                            Rectangle {
-                                height: parent.height
-                                radius: parent.radius
-                                color: seek.fg
-                                width: parent.width * seek.progress
-                            }
-                        }
-
-                        // Knob: even-sized like the track and placed from the
-                        // track's own position, so both share the same centre
-                        // line. Drawn as a true curve, since a rounded Rectangle
-                        // this small is tessellated into a visible polygon.
-                        Shape {
-                            id: knobCircle
-                            width: 2 * Math.round(Style.space(10) / 2)
-                            height: width
-                            y: track.y + (track.height - height) / 2
-                            x: Math.max(0, Math.min(seek.width - width, seek.width * seek.progress - width / 2))
-                            preferredRendererType: Shape.CurveRenderer
-                            antialiasing: true
-                            opacity: seek.hot ? 1 : 0
-                            scale: seek.hot ? 1 : 0.4
-                            Behavior on opacity { NumberAnimation { duration: 120 } }
-                            Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
-
-                            ShapePath {
-                                fillColor: seek.fg
-                                strokeColor: "transparent"
-                                PathAngleArc {
-                                    centerX: knobCircle.width / 2
-                                    centerY: knobCircle.height / 2
-                                    radiusX: knobCircle.width / 2
-                                    radiusY: knobCircle.height / 2
-                                    startAngle: 0
-                                    sweepAngle: 360
-                                }
-                            }
-                        }
-
-                        MouseArea {
-                            id: seekMouse
-                            anchors.fill: parent
-                            enabled: root.canSeek || (root.isLive && root.canSeekRelative)
-                            hoverEnabled: true
-                            cursorShape: root.canSeek ? Qt.PointingHandCursor : Qt.ArrowCursor
-
-                            function valueAt(x) {
-                                return Math.max(0, Math.min(1, x / width)) * seek.length
-                            }
-                            onPressed: function (mouse) {
-                                if (!root.canSeek) return
-                                seek.dragValue = valueAt(mouse.x)
-                                seek.dragging = true
-                            }
-                            onPositionChanged: function (mouse) {
-                                if (seek.dragging) seek.dragValue = valueAt(mouse.x)
-                            }
-                            onReleased: {
-                                if (!seek.dragging) return
-                                root.seekTo(seek.dragValue)
-                                seek.dragging = false
-                            }
-                            onWheel: function (wheel) { root.seekBy(wheel.angleDelta.y > 0 ? 5 : -5) }
-                        }
-                    }
-
-                    Text {
-                        visible: !root.isLive
-                        text: root.formatTime(root.player ? root.player.length : 0)
-                        textFormat: Text.PlainText
-                        color: root.bar ? root.bar.foreground : root.tint
-                        opacity: 0.6
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption
-                    }
-                    Row {
-                        visible: root.isLive
-                        spacing: Style.space(5)
-
-                        Rectangle {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: Style.space(6)
-                            height: width
-                            radius: width / 2
-                            color: Color.urgent
-                        }
-                        Text {
-                            text: "LIVE"
-                            textFormat: Text.PlainText
-                            color: root.bar ? root.bar.foreground : root.tint
-                            opacity: 0.6
-                            font.family: Style.font.family
-                            font.pixelSize: Style.font.caption
-                        }
-                    }
-                }
-
-                PanelSeparator {
-                    visible: root.hasTrack
-                    foreground: root.bar ? root.bar.foreground : root.tint
-                }
-
-                // Transport controls
-                RowLayout {
-                    width: parent.width
-                    visible: root.hasTrack
-                    spacing: Style.space(8)
-
-                    Button {
-                        Layout.fillWidth: true
-                        iconText: "󰒮"
-                        enabled: root.player && root.player.canGoPrevious
-                        foreground: root.bar ? root.bar.foreground : root.tint
-                        onClicked: root.previousTrack()
-                    }
-                    Button {
-                        Layout.fillWidth: true
-                        iconText: root.playing ? "󰏤" : "󰐊"
-                        bordered: true
-                        enabled: root.player && root.player.canTogglePlaying
-                        foreground: root.bar ? root.bar.foreground : root.tint
-                        onClicked: root.playPause()
-                    }
-                    Button {
-                        Layout.fillWidth: true
-                        iconText: "󰒭"
-                        enabled: root.player && root.player.canGoNext
-                        foreground: root.bar ? root.bar.foreground : root.tint
-                        onClicked: root.nextTrack()
-                    }
-                }
-
-                Text {
-                    width: parent.width
-                    horizontalAlignment: Text.AlignHCenter
-                    text: root.player && root.player.identity ? "Playing on " + root.clipText(root.player.identity) : ""
-                    textFormat: Text.PlainText
-                    visible: root.hasTrack && text !== ""
-                    color: root.bar ? root.bar.foreground : root.tint
-                    opacity: 0.45
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                }
-            }
-        }
-    }
-
-    // Keeps the progress bar moving while the card is open, starting at once
-    // when it opens or playback resumes.
-    Timer {
-        interval: 1000
-        repeat: true
-        triggeredOnStart: true
-        running: root.opened && root.playing && !root.isLive
-        onTriggered: if (root.player) root.player.positionChanged()
+        artPath: artwork.path
+        cavaChecked: root.cavaChecked
+        cavaInstalled: root.cavaInstalled
+        cavaInstallCommand: root.cavaInstallCommand
+        onArtLoadFailed: artwork.loadFailed()
     }
 }
