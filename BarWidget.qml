@@ -123,6 +123,55 @@ BarWidget {
     implicitWidth: vertical ? fullWidth : Math.round(fullWidth * reveal)
     implicitHeight: vertical ? Math.round(fullHeight * reveal) : fullHeight
 
+    // Where the widget ends up once fully shown. The card is centred on this
+    // instead of on the widget, so opening it while nothing plays does not
+    // slide it along as the widget grows. The edge that stays put depends on
+    // the bar section: left/top keeps its start, right/bottom its end, and
+    // center its middle.
+    readonly property var barSlot: {
+        for (var p = parent; p; p = p.parent)
+            if (typeof p.region === "string" && p.region && "activeItem" in p) return p
+        return null
+    }
+    readonly property string barRegion: barSlot ? barSlot.region : "left"
+    readonly property real growShift: barRegion === "right" ? 1 : barRegion === "center" ? 0.5 : 0
+    Item {
+        id: cardAnchor
+        x: root.vertical ? 0 : root.growShift * (root.width - root.fullWidth)
+        y: root.vertical ? root.growShift * (root.height - root.fullHeight) : 0
+        width: root.fullWidth
+        height: root.fullHeight
+    }
+
+    // The bar centres its open-panel line on the slot, which grows with the
+    // widget, so the line would slide too. A sub-pixel length hint hides the
+    // bar's line, and this one, styled the same, is centred on cardAnchor. It
+    // lives in the slot so the widget's clip cannot cut it while it grows.
+    readonly property real openPanelIndicatorWidth: 0.001
+    readonly property real openPanelIndicatorHeight: 0.001
+    Rectangle {
+        readonly property int inset: Style.space(2)
+        readonly property int extent: Math.max(Style.space(10), Math.round((root.vertical ? root.fullHeight : root.fullWidth) * 0.55))
+        readonly property string barPosition: root.bar ? root.bar.position : "top"
+
+        parent: root.barSlot || root
+        visible: opacity > 0
+        opacity: root.barSlot && root.barSlot.panelOpen && !root.barSlot.dragSource ? 0.9 : 0
+        color: Color.accent
+        radius: Math.min(width, height) / 2
+        width: root.vertical ? Style.space(2) : extent
+        height: root.vertical ? extent : Style.space(2)
+        x: root.vertical
+            ? (barPosition === "left" ? root.width - width - inset : inset)
+            : Math.round(cardAnchor.x + (cardAnchor.width - width) / 2)
+        y: root.vertical
+            ? Math.round(cardAnchor.y + (cardAnchor.height - height) / 2)
+            : (barPosition === "top" ? root.height - height - inset : inset)
+        z: 50
+
+        Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+    }
+
     readonly property color tint: bar ? bar.barForeground : "#cacccc"
     property var levels: []
 
@@ -515,7 +564,7 @@ BarWidget {
     // n/p next/previous, 0–9 jump to 0–90 %, Esc close.
     KeyboardPanel {
         id: card
-        anchorItem: root
+        anchorItem: cardAnchor
         owner: root
         bar: root.bar
         open: root.opened
