@@ -4,6 +4,7 @@ import Quickshell.Io
 import Quickshell.Services.Mpris
 import qs.Commons
 import qs.Ui
+import "components"
 
 // Spectrum bars driven by cava. Collapses to zero size and runs nothing
 // unless an MPRIS player is playing. Colour follows the bar's own text
@@ -214,7 +215,7 @@ BarWidget {
     readonly property string cavaInstallCommand: "omarchy pkg add cava"
     Process {
         id: envCheck
-        command: ["/usr/bin/timeout", "-k", "2", "5", "/usr/bin/bash", root.pluginFile("check.sh")]
+        command: ["/usr/bin/timeout", "-k", "2", "5", "/usr/bin/bash", root.pluginFile("bin/check.sh")]
         clearEnvironment: true
         environment: root.helperEnvironment
         stdout: StdioCollector {
@@ -253,7 +254,7 @@ BarWidget {
         installed: root.cavaInstalled
         privateDir: root.privateDir
         environment: root.helperEnvironment
-        templatePath: root.pluginFile("cava.conf")
+        templatePath: root.pluginFile("bin/cava.conf")
     }
 
     Repeater {
@@ -336,7 +337,7 @@ BarWidget {
         runtimeReady: root.runtimeReady
         privateDir: root.privateDir
         environment: root.helperEnvironment
-        scriptPath: root.pluginFile("art-fetch.sh")
+        scriptPath: root.pluginFile("bin/art-fetch.sh")
     }
 
     Card {
