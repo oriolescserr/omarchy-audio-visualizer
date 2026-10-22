@@ -6,6 +6,7 @@ import QtQuick
 Item {
     id: root
 
+    // ---- Inputs -------------------------------------------------------------
     property string text: ""
     property color color: "white"
     property string fontFamily: ""
