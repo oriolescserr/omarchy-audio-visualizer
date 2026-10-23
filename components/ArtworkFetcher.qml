@@ -3,9 +3,10 @@ import Quickshell.Io
 
 // Gives the card a safe local copy of the player's artwork. The artwork URL
 // is never loaded directly: art-fetch.sh copies it to the runtime directory
-// after checking scheme, size, type and pixel dimensions, and the card shows
-// that copy (`path`). Fetched once per track in the background, so the card
-// opens with the artwork already there. Draws nothing itself.
+// after checking scheme, size, type and pixel dimensions. PNG text and color
+// profiles are removed first, so the shell does not decode them. The card
+// shows that copy (`path`). Fetched once per track in the background, so the
+// card opens with the artwork already there. Draws nothing itself.
 Item {
     id: root
 
